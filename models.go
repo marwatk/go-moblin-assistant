@@ -87,8 +87,6 @@ type Request struct {
 	SetFilter                         *SetFilterReq           `json:"setFilter,omitempty"`                         // Enables/disables specific video filters (e.g., Pixellate, BlurFaces)
 }
 
-// --- Request Wrappers ---
-
 type BoolReq struct {
 	On bool `json:"on"`
 }
@@ -192,17 +190,17 @@ type Settings struct {
 }
 
 type Scene struct {
-	ID   string `json:"id"`
+	ID   string `json:"id"` // UUID string
 	Name string `json:"name"`
 }
 
 type AutoSceneSwitcher struct {
-	ID   string `json:"id"`
+	ID   string `json:"id"` // UUID string
 	Name string `json:"name"`
 }
 
 type BitratePreset struct {
-	ID      string `json:"id"`
+	ID      string `json:"id"`      // UUID string
 	Bitrate uint32 `json:"bitrate"` // Value in bps (e.g., 5000000 for 5Mbps)
 }
 
@@ -230,33 +228,44 @@ type HttpHeader struct {
 
 // ChatMessage represents a single proxied chat payload intended for Moblin's chat widget.
 type ChatMessage struct {
-	ID           int           `json:"id"`
-	Platform     string        `json:"platform"` // e.g., "twitch", "youtube"
-	MessageID    *string       `json:"messageId,omitempty"`
-	DisplayName  *string       `json:"displayName,omitempty"`
-	User         *string       `json:"user,omitempty"`
-	UserID       *string       `json:"userId,omitempty"`
-	UserColor    interface{}   `json:"userColor,omitempty"`
-	UserBadges   []string      `json:"userBadges"` // URLs pointing to badge icon images
-	Segments     []interface{} `json:"segments"`   // Sliced array of text/emote blocks
-	Timestamp    string        `json:"timestamp"`  // String formatted time
-	IsAction     bool          `json:"isAction"`
-	IsModerator  bool          `json:"isModerator"`
-	IsSubscriber bool          `json:"isSubscriber"`
-	IsOwner      bool          `json:"isOwner"`
-	Bits         *string       `json:"bits,omitempty"`
+	ID           int               `json:"id"`
+	Platform     string            `json:"platform"` // e.g., "twitch", "youtube"
+	MessageID    *string           `json:"messageId,omitempty"`
+	DisplayName  *string           `json:"displayName,omitempty"`
+	User         *string           `json:"user,omitempty"`
+	UserID       *string           `json:"userId,omitempty"`
+	UserColor    *RgbColor         `json:"userColor,omitempty"`
+	UserBadges   []string          `json:"userBadges"` // URLs pointing to badge icon images
+	Segments     []ChatPostSegment `json:"segments"`   // Sliced array of text/emote blocks
+	Timestamp    string            `json:"timestamp"`  // String formatted time
+	IsAction     bool              `json:"isAction"`
+	IsModerator  bool              `json:"isModerator"`
+	IsSubscriber bool              `json:"isSubscriber"`
+	IsOwner      bool              `json:"isOwner"`
+	Bits         *string           `json:"bits,omitempty"`
+}
+
+type RgbColor struct {
+	R int `json:"r"`
+	G int `json:"g"`
+	B int `json:"b"`
+}
+
+type ChatPostSegment struct {
+	Text *string `json:"text,omitempty"`
+	URL  *string `json:"url,omitempty"`
 }
 
 // --- Scoreboard Models ---
 
 // ScoreboardMatchConfig dictates the layout and state of Moblin's custom sports scoreboard overlay.
 type ScoreboardMatchConfig struct {
-	SportID  string                 `json:"sportId"` // Determines period logic (e.g., "football", "soccer")
-	Layout   string                 `json:"layout"`  // UI template to render
-	Team1    ScoreboardTeam         `json:"team1"`
-	Team2    ScoreboardTeam         `json:"team2"`
-	Global   GlobalStats            `json:"global"`
-	Controls map[string]interface{} `json:"controls,omitempty"`
+	SportID  string                       `json:"sportId"` // Determines period logic (e.g., "football", "soccer")
+	Layout   string                       `json:"layout"`  // UI template to render
+	Team1    ScoreboardTeam               `json:"team1"`
+	Team2    ScoreboardTeam               `json:"team2"`
+	Global   GlobalStats                  `json:"global"`
+	Controls map[string]ScoreboardControl `json:"controls"`
 }
 
 type ScoreboardTeam struct {
@@ -299,6 +308,13 @@ type GlobalStats struct {
 	ShowTitle                   *bool   `json:"showTitle,omitempty"`
 	ShowStats                   *bool   `json:"showStats,omitempty"`
 	ShowMoreStats               *bool   `json:"showMoreStats,omitempty"`
+}
+
+type ScoreboardControl struct {
+	Type        string   `json:"type"`
+	Label       string   `json:"label"`
+	Options     []string `json:"options,omitempty"`
+	PeriodReset *bool    `json:"periodReset,omitempty"`
 }
 
 // --- Remote Scene Models ---
@@ -444,23 +460,37 @@ type PreviewData struct {
 // IMPORTANT: Moblin pushes partial updates (deltas) of this struct.
 // You must merge incoming payloads, as omitted fields do not imply nullification.
 type StreamerState struct {
-	Scene           *string  `json:"scene,omitempty"`   // Current Scene UUID
-	Mic             *string  `json:"mic,omitempty"`     // Current Mic string ID
-	Bitrate         *string  `json:"bitrate,omitempty"` // Current BitratePreset UUID
-	Zoom            *float32 `json:"zoom,omitempty"`    // Active camera zoom scalar
-	DebugLogging    *bool    `json:"debugLogging,omitempty"`
-	Streaming       *bool    `json:"streaming,omitempty"`       // True if broadcasting to RTMP/SRT destination
-	Recording       *bool    `json:"recording,omitempty"`       // True if writing video file to local storage
-	Muted           *bool    `json:"muted,omitempty"`           // True if audio input is silenced
-	BatteryCharging *bool    `json:"batteryCharging,omitempty"` // True if plugged into power
+	Scene             *string                 `json:"scene,omitempty"` // UUID string
+	AutoSceneSwitcher *AutoSceneSwitcherState `json:"autoSceneSwitcher,omitempty"`
+	Mic               *string                 `json:"mic,omitempty"`
+	Bitrate           *string                 `json:"bitrate,omitempty"` // UUID string
+	Zoom              *float32                `json:"zoom,omitempty"`
+	ZoomPresets       []ZoomPreset            `json:"zoomPresets,omitempty"`
+	ZoomPreset        *string                 `json:"zoomPreset,omitempty"` // UUID string
+	DebugLogging      *bool                   `json:"debugLogging,omitempty"`
+	Streaming         *bool                   `json:"streaming,omitempty"`
+	Recording         *bool                   `json:"recording,omitempty"`
+	Muted             *bool                   `json:"muted,omitempty"`
+	TorchOn           *bool                   `json:"torchOn,omitempty"`
+	BatteryCharging   *bool                   `json:"batteryCharging,omitempty"`
+	Filters           map[string]bool         `json:"filters,omitempty"`
+}
+
+type AutoSceneSwitcherState struct {
+	ID *string `json:"id,omitempty"` // UUID string
+}
+
+type ZoomPreset struct {
+	ID   string `json:"id"` // UUID string
+	Name string `json:"name"`
 }
 
 // StatusPayload contains real-time hardware metrics. Pushed continuously only if
-// a StartStatus interval was requested.
+// a StartStatus interval was requested, or returned synchronously via GetStatus.
 type StatusPayload struct {
-	General  *StatusGeneral `json:"general,omitempty"`
-	TopLeft  interface{}    `json:"topLeft,omitempty"`  // Maps to Top-Left UI elements (Stream health, camera, viewers)
-	TopRight interface{}    `json:"topRight,omitempty"` // Maps to Top-Right UI elements (Audio dB levels, SRTLA metrics)
+	General  *StatusGeneral  `json:"general,omitempty"`  // Device-level hardware states (battery, thermals, toggles)
+	TopLeft  *StatusTopLeft  `json:"topLeft,omitempty"`  // Maps to Top-Left UI elements (Stream health, camera, viewers)
+	TopRight *StatusTopRight `json:"topRight,omitempty"` // Maps to Top-Right UI elements (Audio dB levels, SRTLA metrics)
 }
 
 // StatusGeneral represents critical device health parameters.
@@ -472,4 +502,57 @@ type StatusGeneral struct {
 	IsLive          *bool   `json:"isLive,omitempty"`       // Broadcast active
 	IsRecording     *bool   `json:"isRecording,omitempty"`  // Local record active
 	IsMuted         *bool   `json:"isMuted,omitempty"`      // Audio silenced
+}
+
+// StatusItem represents a localized UI metric string and its health status
+// directly reflecting the visual badges in the Moblin app.
+type StatusItem struct {
+	Message string `json:"message"` // The formatted text displayed in the UI (e.g., "3.5 Mbps", "1080p • 60 fps")
+	Ok      bool   `json:"ok"`      // True if the metric is in a healthy state, false if warning/critical
+}
+
+// StatusTopLeft contains metrics displayed in the top-left area of the Moblin UI.
+type StatusTopLeft struct {
+	Stream  *StatusItem `json:"stream,omitempty"`  // Broadcast destination status and duration
+	Camera  *StatusItem `json:"camera,omitempty"`  // Active camera resolution and framerate
+	Mic     *StatusItem `json:"mic,omitempty"`     // Active microphone hardware name
+	Zoom    *StatusItem `json:"zoom,omitempty"`    // Current optical/digital zoom multiplier
+	Obs     *StatusItem `json:"obs,omitempty"`     // OBS WebSocket remote connection status
+	Events  *StatusItem `json:"events,omitempty"`  // Recent stream events or alerts (follows/subs)
+	Chat    *StatusItem `json:"chat,omitempty"`    // Twitch/YouTube chat connection health
+	Viewers *StatusItem `json:"viewers,omitempty"` // Current concurrent viewer count
+}
+
+// StatusTopRight contains metrics displayed in the top-right area of the Moblin UI.
+type StatusTopRight struct {
+	AudioInfo      *AudioInfo  `json:"audioInfo,omitempty"`      // Raw audio channel and level data (StatusTopRightAudioInfo)
+	AudioLevel     *StatusItem `json:"audioLevel,omitempty"`     // Formatted audio dB level string (e.g., "-5 dB")
+	RtmpServer     *StatusItem `json:"rtmpServer,omitempty"`     // Internal RTMP server connection health
+	RemoteControl  *StatusItem `json:"remoteControl,omitempty"`  // Remote control assistant connection status
+	GameController *StatusItem `json:"gameController,omitempty"` // Connected bluetooth game controller status
+	Bitrate        *StatusItem `json:"bitrate,omitempty"`        // Current outbound streaming bitrate
+	Uptime         *StatusItem `json:"uptime,omitempty"`         // System or application uptime
+	Location       *StatusItem `json:"location,omitempty"`       // GPS location coordinates or speed data
+	Srtla          *StatusItem `json:"srtla,omitempty"`          // SRTLA bonded connection health and dropped packets
+	SrtlaRtts      *StatusItem `json:"srtlaRtts,omitempty"`      // SRTLA Round Trip Time latencies
+	Recording      *StatusItem `json:"recording,omitempty"`      // Local file recording status and duration
+	Replay         *StatusItem `json:"replay,omitempty"`         // Instant replay buffer state
+	BrowserWidgets *StatusItem `json:"browserWidgets,omitempty"` // Health of interactive browser overlays
+	Moblink        *StatusItem `json:"moblink,omitempty"`        // Moblink cellular bonding status
+	DjiDevices     *StatusItem `json:"djiDevices,omitempty"`     // Connected DJI drone/gimbal hardware status
+	SystemMonitor  *StatusItem `json:"systemMonitor,omitempty"`  // CPU, memory, and thermal system metrics
+}
+
+// AudioInfo replaces the interface{} in StatusTopRight
+type AudioInfo struct {
+	AudioLevel            AudioLevel `json:"audioLevel"`
+	NumberOfAudioChannels int        `json:"numberOfAudioChannels"`
+}
+
+// AudioLevel maps to RemoteControlStatusTopRightAudioLevel.
+// Swift Codable enums serialize as single-key objects, which maps cleanly to pointers in Go.
+type AudioLevel struct {
+	Value   *float32  `json:"value,omitempty"`
+	Muted   *struct{} `json:"muted,omitempty"`
+	Unknown *struct{} `json:"unknown,omitempty"`
 }
