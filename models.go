@@ -1,6 +1,11 @@
 package moblin
 
-import "time"
+import (
+	"encoding/json"
+	"fmt"
+	"math"
+	"time"
+)
 
 // --- Messages to Streamer ---
 
@@ -61,7 +66,7 @@ type Request struct {
 	SetTorch                          *BoolReq                `json:"setTorch,omitempty"`                          // Toggles the device flashlight
 	SetDebugLogging                   *BoolReq                `json:"setDebugLogging,omitempty"`                   // Toggles verbose internal logging
 	SetScene                          *UUIDReq                `json:"setScene,omitempty"`                          // Switches to a specific Scene ID
-	SetAutoSceneSwitcher              *UUIDReq                `json:"setAutoSceneSwitcher,omitempty"`              // Enables/disables automatic scene switching logic
+	SetAutoSceneSwitcher              *NullableUUIDReq        `json:"setAutoSceneSwitcher,omitempty"`              // Enables/disables automatic scene switching logic
 	SetBitratePreset                  *UUIDReq                `json:"setBitratePreset,omitempty"`                  // Switches to a specific Bitrate Preset ID
 	SetMic                            *StringIDReq            `json:"setMic,omitempty"`                            // Switches the active microphone hardware
 	SetSrtConnectionPriority          *SetSrtPriorityReq      `json:"setSrtConnectionPriority,omitempty"`          // Modifies cellular/WiFi bonding priority for SRT connections
@@ -96,6 +101,13 @@ type FloatReq struct {
 type UUIDReq struct {
 	ID string `json:"id"` // Moblin UUIDs serialize to standard uppercase dashed strings
 }
+
+// NullableUUIDReq is like UUIDReq but the ID can be nil, serializing as JSON null.
+// Used for setAutoSceneSwitcher where nil means "disable".
+type NullableUUIDReq struct {
+	ID *string `json:"id"`
+}
+
 type StringIDReq struct {
 	ID string `json:"id"`
 }
@@ -151,9 +163,35 @@ type WhipReq struct {
 	Body    []byte       `json:"body"`
 }
 
+// SwiftEnum represents a Swift Codable enum case without associated values.
+// Swift serializes these as {"caseName": {}} rather than bare strings.
+type SwiftEnum struct {
+	Name string
+}
+
+func (e SwiftEnum) MarshalJSON() ([]byte, error) {
+	return json.Marshal(map[string]struct{}{e.Name: {}})
+}
+
+func (e *SwiftEnum) UnmarshalJSON(data []byte) error {
+	var obj map[string]json.RawMessage
+	if err := json.Unmarshal(data, &obj); err != nil {
+		return err
+	}
+	for k := range obj {
+		e.Name = k
+		return nil
+	}
+	return fmt.Errorf("empty swift enum object")
+}
+
+func (e SwiftEnum) String() string {
+	return e.Name
+}
+
 type SetFilterReq struct {
-	Filter string `json:"filter"` // Maps to RemoteControlFilter enum (e.g., "pixellate", "blurFaces")
-	On     bool   `json:"on"`
+	Filter SwiftEnum `json:"filter"` // Swift RemoteControlFilter enum (e.g., "pixellate", "blurFaces")
+	On     bool      `json:"on"`
 }
 
 // --- Response Wrappers ---
@@ -359,7 +397,7 @@ type TextStats struct {
 	BitrateAndTotal      string                 `json:"bitrateAndTotal"`
 	Resolution           *string                `json:"resolution,omitempty"`
 	Fps                  *int                   `json:"fps,omitempty"`
-	Date                 time.Time              `json:"date"`
+	Date                 AppleDate              `json:"date"`
 	DebugOverlayLines    []string               `json:"debugOverlayLines"`
 	Speed                string                 `json:"speed"` // GPS calculated speed
 	AverageSpeed         string                 `json:"averageSpeed"`
@@ -367,10 +405,10 @@ type TextStats struct {
 	Distance             string                 `json:"distance"`
 	Slope                string                 `json:"slope"`
 	Conditions           *string                `json:"conditions,omitempty"` // Weather conditions
-	Temperature          *float64               `json:"temperature,omitempty"`
-	FeelsLikeTemperature *float64               `json:"feelsLikeTemperature,omitempty"`
-	WindSpeed            *float64               `json:"windSpeed,omitempty"`
-	WindGust             *float64               `json:"windGust,omitempty"`
+	Temperature          *Measurement           `json:"temperature,omitempty"`
+	FeelsLikeTemperature *Measurement           `json:"feelsLikeTemperature,omitempty"`
+	WindSpeed            *Measurement           `json:"windSpeed,omitempty"`
+	WindGust             *Measurement           `json:"windGust,omitempty"`
 	Country              *string                `json:"country,omitempty"`
 	CountryFlag          *string                `json:"countryFlag,omitempty"`
 	State                *string                `json:"state,omitempty"`
@@ -396,6 +434,39 @@ type Location struct {
 	Longitude float64 `json:"longitude"`
 }
 
+// AppleDate handles Swift's default Date encoding, which serializes as a Float64
+// representing seconds since January 1, 2001 00:00:00 UTC (Apple's reference date).
+type AppleDate struct {
+	time.Time
+}
+
+var appleReferenceDate = time.Date(2001, 1, 1, 0, 0, 0, 0, time.UTC)
+
+func (d *AppleDate) UnmarshalJSON(data []byte) error {
+	var seconds float64
+	if err := json.Unmarshal(data, &seconds); err != nil {
+		// Fall back to RFC3339 string in case encoding changes
+		return json.Unmarshal(data, &d.Time)
+	}
+	whole, frac := math.Modf(seconds)
+	d.Time = appleReferenceDate.Add(
+		time.Duration(whole)*time.Second +
+			time.Duration(frac*1e9)*time.Nanosecond,
+	)
+	return nil
+}
+
+func (d AppleDate) MarshalJSON() ([]byte, error) {
+	return json.Marshal(d.Time.Sub(appleReferenceDate).Seconds())
+}
+
+// Measurement represents a Swift Measurement<T> value, which serializes as
+// {"value": 22.5, "unit": "degC"} rather than a bare number.
+type Measurement struct {
+	Value float64 `json:"value"`
+	Unit  string  `json:"unit"`
+}
+
 type BoolData struct {
 	On bool `json:"on"`
 }
@@ -408,11 +479,12 @@ type FloatData struct {
 
 // MessageToAssistant is the envelope for all data sent from Moblin back to the server.
 type MessageToAssistant struct {
-	Identify *IdentifyData `json:"identify,omitempty"` // Initial authentication payload
-	Event    *EventWrapper `json:"event,omitempty"`    // Unsolicited state mutations or interval statuses
-	Response *Response     `json:"response,omitempty"` // Synchronous replies to Request payloads
-	Preview  *PreviewData  `json:"preview,omitempty"`  // Raw camera frame bytes
-	Ping     *struct{}     `json:"ping,omitempty"`     // Keepalive packet
+	Identify    *IdentifyData    `json:"identify,omitempty"`    // Initial authentication payload
+	Event       *EventWrapper    `json:"event,omitempty"`       // Unsolicited state mutations or interval statuses
+	Response    *Response        `json:"response,omitempty"`    // Synchronous replies to Request payloads
+	Preview     *PreviewData     `json:"preview,omitempty"`     // Raw camera frame bytes
+	TwitchStart *TwitchStartData `json:"twitchStart,omitempty"` // Streamer requesting Twitch EventSub/chat proxy
+	Ping        *struct{}        `json:"ping,omitempty"`        // Keepalive packet
 }
 
 // EventWrapper unwraps the nested structure caused by Swift's enum serialization `case event(data: ...)`.
@@ -426,10 +498,10 @@ type IdentifyData struct {
 }
 
 type EventPayload struct {
-	State      *StateEvent  `json:"state,omitempty"`
-	Log        *LogEvent    `json:"log,omitempty"`
-	Status     *StatusEvent `json:"status,omitempty"`
-	Scoreboard interface{}  `json:"scoreboard,omitempty"`
+	State      *StateEvent      `json:"state,omitempty"`
+	Log        *LogEvent        `json:"log,omitempty"`
+	Status     *StatusEvent     `json:"status,omitempty"`
+	Scoreboard *ScoreboardEvent `json:"scoreboard,omitempty"`
 }
 
 type LogEvent struct {
@@ -444,6 +516,12 @@ type StatusEvent struct {
 	Data StatusPayload `json:"data"`
 }
 
+// ScoreboardEvent wraps a scoreboard config push from the streamer.
+// Swift case: .scoreboard(config: RemoteControlScoreboardMatchConfig)
+type ScoreboardEvent struct {
+	Config ScoreboardMatchConfig `json:"config"`
+}
+
 type Response struct {
 	ID     uint64        `json:"id"`
 	Result ResultPayload `json:"result"`
@@ -452,6 +530,15 @@ type Response struct {
 
 type PreviewData struct {
 	Preview []byte `json:"preview"` // Base64 JPEG frame. Handled automatically by encoding/json
+}
+
+// TwitchStartData is sent by the streamer to request the assistant proxy
+// Twitch EventSub notifications and chat messages. The access token is
+// AES-GCM encrypted with the shared password and base64-encoded.
+type TwitchStartData struct {
+	ChannelName *string `json:"channelName,omitempty"`
+	ChannelId   string  `json:"channelId"`
+	AccessToken string  `json:"accessToken"` // Base64 of AES-GCM encrypted token
 }
 
 // --- Core Data Models ---
@@ -473,7 +560,63 @@ type StreamerState struct {
 	Muted             *bool                   `json:"muted,omitempty"`
 	TorchOn           *bool                   `json:"torchOn,omitempty"`
 	BatteryCharging   *bool                   `json:"batteryCharging,omitempty"`
-	Filters           map[string]bool         `json:"filters,omitempty"`
+	Filters           FilterMap               `json:"filters,omitempty"`
+}
+
+// FilterMap handles Swift's serialization of [RemoteControlFilter: Bool] dictionaries.
+// Swift Codable encodes enum-keyed dictionaries as alternating arrays [key, value, key, value, ...]
+// rather than JSON objects, because the enum keys are not raw-value strings.
+type FilterMap map[string]bool
+
+func (f *FilterMap) UnmarshalJSON(data []byte) error {
+	// Try object format first (defensive, in case Moblin ever changes)
+	var obj map[string]bool
+	if err := json.Unmarshal(data, &obj); err == nil {
+		*f = obj
+		return nil
+	}
+
+	// Swift enum-keyed dict: alternating [key, val, key, val, ...]
+	var arr []json.RawMessage
+	if err := json.Unmarshal(data, &arr); err != nil {
+		return err
+	}
+	if len(arr)%2 != 0 {
+		return fmt.Errorf("filters: odd-length array (%d)", len(arr))
+	}
+
+	result := make(map[string]bool, len(arr)/2)
+	for i := 0; i < len(arr); i += 2 {
+		// Swift encodes enum keys as {"caseName": {}}, not bare strings
+		var keyObj map[string]json.RawMessage
+		if err := json.Unmarshal(arr[i], &keyObj); err != nil {
+			return fmt.Errorf("filters: key at index %d: %w", i, err)
+		}
+		var key string
+		for k := range keyObj {
+			key = k
+			break
+		}
+		if key == "" {
+			return fmt.Errorf("filters: empty key object at index %d", i)
+		}
+
+		var val bool
+		if err := json.Unmarshal(arr[i+1], &val); err != nil {
+			return fmt.Errorf("filters: value at index %d: %w", i+1, err)
+		}
+		result[key] = val
+	}
+	*f = result
+	return nil
+}
+
+func (f FilterMap) MarshalJSON() ([]byte, error) {
+	arr := make([]interface{}, 0, len(f)*2)
+	for k, v := range f {
+		arr = append(arr, map[string]struct{}{k: {}}, v)
+	}
+	return json.Marshal(arr)
 }
 
 type AutoSceneSwitcherState struct {

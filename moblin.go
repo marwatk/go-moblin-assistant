@@ -59,6 +59,19 @@ type Callbacks struct {
 	// OnPreview is triggered when the app pushes a raw video frame (typically JPEG).
 	// This requires a prior `StartPreview` request to initiate the continuous frame stream.
 	OnPreview func(previewData []byte)
+
+	// OnTwitchStart is triggered when the streamer requests the assistant to proxy
+	// Twitch EventSub notifications and chat. The access token is AES-GCM encrypted
+	// with the shared password and base64-encoded. Decryption is the caller's responsibility.
+	OnTwitchStart func(data TwitchStartData)
+
+	// OnRawMessage is triggered for every WebSocket message received, before any JSON
+	// unmarshalling or protocol handling occurs. The payload is the raw UTF-8 bytes
+	// exactly as read off the wire. This is intended for diagnostics and protocol
+	// debugging — it fires for all message types including identify, ping, event,
+	// response, and preview frames. Avoid expensive work in this callback as it
+	// runs synchronously in the read loop and will block all message processing.
+	OnRawMessage func(payload []byte)
 }
 
 // Client represents a connected Moblin device.
@@ -127,6 +140,10 @@ func (c *Client) readLoop(challenge, salt string) {
 			break
 		}
 
+		if c.callbacks.OnRawMessage != nil {
+			c.callbacks.OnRawMessage(payload)
+		}
+
 		var msg MessageToAssistant
 		if err := json.Unmarshal(payload, &msg); err != nil {
 			log.Printf("JSON unmarshal error: %v\n", err)
@@ -179,7 +196,14 @@ func (c *Client) processMessage(msg MessageToAssistant) {
 			c.callbacks.OnState(payload.State.Data)
 		} else if payload.Status != nil && c.callbacks.OnStatus != nil {
 			c.callbacks.OnStatus(payload.Status.Data)
+		} else if payload.Scoreboard != nil && c.callbacks.OnScoreboard != nil {
+			c.callbacks.OnScoreboard(payload.Scoreboard.Config)
 		}
+		return
+	}
+
+	if msg.TwitchStart != nil && c.callbacks.OnTwitchStart != nil {
+		c.callbacks.OnTwitchStart(*msg.TwitchStart)
 		return
 	}
 
