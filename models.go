@@ -550,9 +550,13 @@ type AudioInfo struct {
 }
 
 // AudioLevel maps to RemoteControlStatusTopRightAudioLevel.
-// Swift Codable enums serialize as single-key objects, which maps cleanly to pointers in Go.
 type AudioLevel struct {
-	Value   *float32  `json:"value,omitempty"`
-	Muted   *struct{} `json:"muted,omitempty"`
-	Unknown *struct{} `json:"unknown,omitempty"`
+	Value   *AudioLevelValue `json:"value,omitempty"`
+	Muted   *struct{}        `json:"muted,omitempty"`
+	Unknown *struct{}        `json:"unknown,omitempty"`
+}
+
+// AudioLevelValue strictly maps to Swift's auto-synthesized enum associated value object.
+type AudioLevelValue struct {
+	FloatVal float32 `json:"_0"`
 }
