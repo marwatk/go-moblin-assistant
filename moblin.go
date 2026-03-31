@@ -3,6 +3,7 @@ package moblin
 import (
 	"crypto/rand"
 	"crypto/sha256"
+	"crypto/subtle"
 	"encoding/base64"
 	"encoding/json"
 	"errors"
@@ -74,12 +75,17 @@ type Callbacks struct {
 	OnRawMessage func(payload []byte)
 }
 
-// Client represents a connected Moblin device.
-type Client struct {
+type WSConn struct {
 	conn       *websocket.Conn
 	writeMutex sync.Mutex
-	password   string
-	callbacks  Callbacks
+}
+
+// Client represents a connected Moblin device.
+type Client struct {
+	wsConn    *WSConn
+	connMutex sync.RWMutex
+	password  string
+	callbacks Callbacks
 
 	requestID uint64
 	pending   sync.Map // map[uint64]chan Response
@@ -101,20 +107,44 @@ func (c *Client) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		return // Connection failed
 	}
-	c.conn = conn
-	defer c.conn.Close()
+	wsConn := &WSConn{
+		conn: conn,
+	}
+	wsConn.conn.SetReadLimit(10 * 1024 * 1024) // 10mb
+	wsConn.conn.SetReadDeadline(time.Now().Add(60 * time.Second))
+
 	defer func() {
+		c.connMutex.Lock()
+		if c.wsConn != wsConn {
+			c.connMutex.Unlock()
+			return
+		}
+		c.wsConn = nil
+		c.connMutex.Unlock()
+
+		c.drainPending()
+
 		if c.callbacks.OnDisconnected != nil {
 			c.callbacks.OnDisconnected()
 		}
 	}()
 
+	defer conn.Close()
+
 	// 1. Generate Challenge and Salt
-	challenge := generateRandomString(16)
-	salt := generateRandomString(16)
+	challenge, err := generateRandomString(16)
+	if err != nil {
+		conn.Close()
+		return
+	}
+	salt, err := generateRandomString(16)
+	if err != nil {
+		conn.Close()
+		return
+	}
 
 	// 2. Send Hello
-	err = c.sendJSON(MessageToStreamer{
+	err = c.sendJSON(wsConn, MessageToStreamer{
 		Hello: &HelloData{
 			ApiVersion: "0.1",
 			Authentication: Authentication{
@@ -127,16 +157,19 @@ func (c *Client) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	c.readLoop(challenge, salt)
+	c.readLoop(wsConn, challenge, salt)
 }
 
-func (c *Client) readLoop(challenge, salt string) {
+func (c *Client) readLoop(wsConn *WSConn, challenge, salt string) {
 	identified := false
 
 	for {
-		_, payload, err := c.conn.ReadMessage()
+		wsConn.conn.SetReadDeadline(time.Now().Add(60 * time.Second))
+		_, payload, err := wsConn.conn.ReadMessage()
 		if err != nil {
-			log.Printf("WebSocket read error: %v\n", err)
+			if websocket.IsUnexpectedCloseError(err, websocket.CloseNormalClosure, websocket.CloseGoingAway) {
+				log.Printf("WebSocket read error: %v\n", err)
+			}
 			break
 		}
 
@@ -147,40 +180,75 @@ func (c *Client) readLoop(challenge, salt string) {
 		var msg MessageToAssistant
 		if err := json.Unmarshal(payload, &msg); err != nil {
 			log.Printf("JSON unmarshal error: %v\n", err)
-			continue
-		}
-
-		// Handle Authentication Phase
-		if !identified {
-			if msg.Identify != nil {
-				expectedHash := hashPassword(challenge, salt, c.password)
-				if msg.Identify.Authentication == expectedHash {
-					identified = true
-					c.sendJSON(MessageToStreamer{Identified: &IdentifiedData{
-						Result: ResultPayload{Ok: &struct{}{}},
-					}})
-					if c.callbacks.OnConnected != nil {
-						c.callbacks.OnConnected()
-					}
-					continue
-				}
-
-				c.sendJSON(MessageToStreamer{Identified: &IdentifiedData{
-					Result: ResultPayload{WrongPassword: &struct{}{}},
-				}})
+			if !identified {
+				// Abort connection on garbage data during auth phase
 				return
 			}
 			continue
 		}
 
+		// Handle Authentication Phase
+		if !identified {
+			if msg.Identify == nil {
+				// Disconnect immediately on invalid initial payload
+				return
+			}
+			expectedHash := hashPassword(challenge, salt, c.password)
+			if subtle.ConstantTimeCompare([]byte(msg.Identify.Authentication), []byte(expectedHash)) == 1 {
+				identified = true
+
+				c.connMutex.Lock()
+				var closeConn *WSConn
+				if c.wsConn != nil {
+					closeConn = c.wsConn
+				}
+				c.wsConn = wsConn
+				c.connMutex.Unlock()
+
+				c.drainPending()
+
+				if closeConn != nil {
+					closeConn.conn.Close()
+					if c.callbacks.OnDisconnected != nil {
+						c.callbacks.OnDisconnected()
+					}
+				}
+
+				c.sendJSON(wsConn, MessageToStreamer{Identified: &IdentifiedData{
+					Result: ResultPayload{Ok: &struct{}{}},
+				}})
+				if c.callbacks.OnConnected != nil {
+					c.callbacks.OnConnected()
+				}
+				continue
+			}
+
+			c.sendJSON(wsConn, MessageToStreamer{Identified: &IdentifiedData{
+				Result: ResultPayload{WrongPassword: &struct{}{}},
+			}})
+			return
+		}
+
 		// Handle Telemetry & Responses Phase
-		c.processMessage(msg)
+		c.processMessage(wsConn, msg)
 	}
 }
 
-func (c *Client) processMessage(msg MessageToAssistant) {
+// drainPending closes all pending response channels, unblocking any callers
+// waiting in SendCommand. Must be called when a connection is no longer viable.
+func (c *Client) drainPending() {
+	c.pending.Range(func(key, value interface{}) bool {
+		if ch, ok := value.(chan Response); ok {
+			close(ch)
+		}
+		c.pending.Delete(key)
+		return true
+	})
+}
+
+func (c *Client) processMessage(wsConn *WSConn, msg MessageToAssistant) {
 	if msg.Ping != nil {
-		c.sendJSON(MessageToStreamer{Pong: &struct{}{}})
+		c.sendJSON(wsConn, MessageToStreamer{Pong: &struct{}{}})
 		if c.callbacks.OnPing != nil {
 			c.callbacks.OnPing()
 		}
@@ -189,7 +257,6 @@ func (c *Client) processMessage(msg MessageToAssistant) {
 
 	if msg.Event != nil {
 		payload := msg.Event.Data // Unwrap the nested "data" struct
-
 		if payload.Log != nil && c.callbacks.OnLog != nil {
 			c.callbacks.OnLog(payload.Log.Entry)
 		} else if payload.State != nil && c.callbacks.OnState != nil {
@@ -208,9 +275,13 @@ func (c *Client) processMessage(msg MessageToAssistant) {
 	}
 
 	if msg.Response != nil {
-		if ch, ok := c.pending.Load(msg.Response.ID); ok {
-			// Corrected: Use the channel send operator
-			ch.(chan Response) <- *msg.Response
+		if val, ok := c.pending.Load(msg.Response.ID); ok {
+			if ch, valid := val.(chan Response); valid {
+				select {
+				case ch <- *msg.Response:
+				default:
+				}
+			}
 			c.pending.Delete(msg.Response.ID)
 		}
 		return
@@ -222,20 +293,27 @@ func (c *Client) processMessage(msg MessageToAssistant) {
 }
 
 // sendJSON safely writes JSON to the WebSocket.
-func (c *Client) sendJSON(v interface{}) error {
-	c.writeMutex.Lock()
-	defer c.writeMutex.Unlock()
-	return c.conn.WriteJSON(v)
+func (c *Client) sendJSON(wsConn *WSConn, v interface{}) error {
+	wsConn.writeMutex.Lock()
+	defer wsConn.writeMutex.Unlock()
+	wsConn.conn.SetWriteDeadline(time.Now().Add(10 * time.Second))
+	return wsConn.conn.WriteJSON(v)
 }
 
 // SendCommand executes a synchronous request to the Moblin app.
 func (c *Client) SendCommand(req Request, timeout time.Duration) (*ResponseData, error) {
+	c.connMutex.RLock()
+	wsConn := c.wsConn
+	c.connMutex.RUnlock()
+	if wsConn == nil {
+		return nil, fmt.Errorf("No connection to send to")
+	}
 	id := atomic.AddUint64(&c.requestID, 1)
 	respChan := make(chan Response, 1)
 	c.pending.Store(id, respChan)
 	defer c.pending.Delete(id)
 
-	err := c.sendJSON(MessageToStreamer{
+	err := c.sendJSON(wsConn, MessageToStreamer{
 		Request: &RequestPayload{
 			ID:   id,
 			Data: req,
@@ -245,13 +323,19 @@ func (c *Client) SendCommand(req Request, timeout time.Duration) (*ResponseData,
 		return nil, err
 	}
 
+	timer := time.NewTimer(timeout)
+	defer timer.Stop()
+
 	select {
-	case resp := <-respChan:
+	case resp, ok := <-respChan:
+		if !ok {
+			return nil, errors.New("connection lost")
+		}
 		if resp.Result.Ok == nil {
-			return nil, fmt.Errorf("command failed: non-ok result received")
+			return nil, errors.New("command failed: non-ok result received")
 		}
 		return resp.Data, nil
-	case <-time.After(timeout):
+	case <-timer.C:
 		return nil, errors.New("timeout waiting for response")
 	}
 }
@@ -268,8 +352,11 @@ func hashPassword(challenge, salt, password string) string {
 	return base64.StdEncoding.EncodeToString(h2[:])
 }
 
-func generateRandomString(n int) string {
+func generateRandomString(n int) (string, error) {
 	b := make([]byte, n)
-	rand.Read(b)
-	return base64.URLEncoding.EncodeToString(b)
+	_, err := rand.Read(b)
+	if err != nil {
+		return "", err
+	}
+	return base64.URLEncoding.EncodeToString(b), nil
 }
