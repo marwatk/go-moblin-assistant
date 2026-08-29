@@ -306,7 +306,7 @@ func main() {
 			}
 			on := args[0] == "on"
 			_, err := client.SendCommand(moblin.Request{
-				SetStream: &moblin.BoolReq{On: on},
+				SetLive: &moblin.BoolReq{On: on},
 			}, 3*time.Second)
 			if err != nil {
 				fmt.Printf("Error: %v\n", err)

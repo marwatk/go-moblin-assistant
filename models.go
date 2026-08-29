@@ -59,7 +59,7 @@ type Request struct {
 	GetStatus                         *struct{}               `json:"getStatus,omitempty"`                         // Polls for current battery, thermal, and UI element status
 	GetSettings                       *struct{}               `json:"getSettings,omitempty"`                       // Fetches configured scenes, mics, and bitrate presets
 	SetRecord                         *BoolReq                `json:"setRecord,omitempty"`                         // Toggles local device recording
-	SetStream                         *BoolReq                `json:"setStream,omitempty"`                         // Toggles RTMP/SRT streaming
+	SetLive                           *BoolReq                `json:"setLive,omitempty"`                           // Toggles RTMP/SRT streaming (renamed from setStream in Moblin 33.10.0)
 	SetZoom                           *FloatReq               `json:"setZoom,omitempty"`                           // Sets raw camera zoom level (e.g., 1.0, 2.0)
 	SetZoomPreset                     *UUIDReq                `json:"setZoomPreset,omitempty"`                     // Switches to a predefined zoom preset ID
 	SetMute                           *BoolReq                `json:"setMute,omitempty"`                           // Toggles microphone mute
@@ -330,22 +330,23 @@ type ScoreboardTeam struct {
 }
 
 type GlobalStats struct {
-	Title                       string  `json:"title"`
-	Timer                       string  `json:"timer"`              // The active clock string
-	TimerDirection              string  `json:"timerDirection"`     // "up" or "down"
-	Duration                    *int    `json:"duration,omitempty"` // Total minutes per period
-	Period                      string  `json:"period"`             // e.g., "1", "2", "Half"
-	PeriodLabel                 string  `json:"periodLabel"`        // e.g., "Period", "Quarter"
-	InfoBoxText                 string  `json:"infoBoxText"`
-	PrimaryScoreResetOnPeriod   *bool   `json:"primaryScoreResetOnPeriod,omitempty"`
-	SecondaryScoreResetOnPeriod *bool   `json:"secondaryScoreResetOnPeriod,omitempty"`
-	ChangePossessionOnScore     *bool   `json:"changePossessionOnScore,omitempty"`
-	ScoringMode                 *string `json:"scoringMode,omitempty"`
-	MinSetScore                 *int    `json:"minSetScore,omitempty"`
-	MaxSetScore                 *int    `json:"maxSetScore,omitempty"`
-	ShowTitle                   *bool   `json:"showTitle,omitempty"`
-	ShowStats                   *bool   `json:"showStats,omitempty"`
-	ShowMoreStats               *bool   `json:"showMoreStats,omitempty"`
+	Title          string `json:"title"`
+	Timer          string `json:"timer"`              // The active clock string
+	TimerDirection string `json:"timerDirection"`     // "up" or "down"
+	Duration       *int   `json:"duration,omitempty"` // Total minutes per period
+	Period         string `json:"period"`             // e.g., "1", "2", "Half"
+	PeriodLabel    string `json:"periodLabel"`        // e.g., "Period", "Quarter"
+	InfoBoxText    string `json:"infoBoxText"`
+	// Non-optional on the device: Moblin's decoder rejects the entire
+	// updateScoreboard request if either key is missing, so these are plain
+	// bools rather than omitempty pointers.
+	PrimaryScoreResetOnPeriod bool    `json:"primaryScoreResetOnPeriod"`
+	ChangePossessionOnScore   bool    `json:"changePossessionOnScore"`
+	ScoringMode               *string `json:"scoringMode,omitempty"`
+	ShowTitle                 *bool   `json:"showTitle,omitempty"`
+	ShowStats                 *bool   `json:"showStats,omitempty"`
+	ShowMoreStats             *bool   `json:"showMoreStats,omitempty"`
+	ShowClock                 *bool   `json:"showClock,omitempty"`
 }
 
 type ScoreboardControl struct {
